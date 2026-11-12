@@ -20,6 +20,18 @@ function App() {
   const [won, setWon] = useState(false);
   const [spriteUrl, setSpriteUrl] = useState(null);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const [volume, setVolume] = useState(() => {
+    const saved = Number(localStorage.getItem("volume"));
+    return saved >= 0 && saved <= 100 && localStorage.getItem("volume") !== null ? saved : 40;
+  });
+  // squared so the slider feels even to the ear
+  const gain = (volume / 100) ** 2;
+
+  function handleVolumeChange(e) {
+    const next = Number(e.target.value);
+    setVolume(next);
+    localStorage.setItem("volume", String(next));
+  }
 
   const[allPokemon, setAllPokemon] = useState([]);
 
@@ -62,6 +74,7 @@ function App() {
     if (finalGuess === pokemonName.toLowerCase()) {
       // correct guess
       const rightSound = new Audio("/yayyyyyyyy.mp3");
+      rightSound.volume = gain;
       rightSound.play().catch((error) => {
         console.error("Error playing sound:", error);
       });
@@ -70,6 +83,7 @@ function App() {
       setRevealed(true);
     } else{
       const wrongSound = new Audio("/fahhhhhhhhhhhhhh.mp3");
+      wrongSound.volume = gain;
       wrongSound.play().catch((error) => {
         console.error("Error playing sound:", error);
       });
@@ -150,7 +164,7 @@ return (
       <div className="game-layout">
 
         <div className="canvas-section">
-          <Analyzer ref={analyzerRef} audioUrl={audioUrl} terrainColors={terrainColors} />
+          <Analyzer ref={analyzerRef} audioUrl={audioUrl} terrainColors={terrainColors} volume={gain} />
         </div>
 
         <div className="ui-section">
@@ -239,6 +253,18 @@ return (
               </button>
             </div>
           )}
+
+          <label className="volume-control">
+            <span>Volume</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={volume}
+              onChange={handleVolumeChange}
+              className="volume-slider"
+            />
+          </label>
 
         </div>
       </div>

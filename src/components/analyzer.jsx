@@ -1,6 +1,6 @@
 // acts as rendererer
 // gets audioURL from app and handles everything related to sound and graphics
-import React, { useEffect, useRef, useState, useMemo, useImperativeHandle, forwardRef } from "react";
+import React, { Suspense, useEffect, useRef, useState, useMemo, useImperativeHandle, forwardRef } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Text, Line, Billboard } from "@react-three/drei";
 import "./analyzer.css";
@@ -157,6 +157,9 @@ function ScannerWave({ cubeSize, isPlayingRef, startTimeRef, durationRef, audioC
   );
 }
 
+// Lowest frequency shown on the (logarithmic) frequency axis
+const MIN_FREQUENCY = 100;
+
 // Compute spectrogram directly from raw PCM data
 function precomputeSpectrogram(audioBuffer) {
   const channelData = audioBuffer.getChannelData(0);
@@ -165,10 +168,15 @@ function precomputeSpectrogram(audioBuffer) {
   const sampleCount = 128;
   const hopSize = Math.floor(channelData.length / sampleCount);
 
-  // Downsample frequency bins to match time resolution
-  // This makes a square grid (128 × 128) instead of (128 × 512)
+  // Resample frequency bins onto a log scale, at the same resolution as time.
+  // This makes a square grid (128 × 128) and spreads the low pitches, where most
+  // of a cry's energy sits, across the axis instead of squashing them into a corner.
   const outputBins = 128;
-  const binsPerGroup = Math.floor(binCount / outputBins);
+  const binHz = audioBuffer.sampleRate / fftSize;
+  const maxFrequency = audioBuffer.sampleRate / 2;
+  const freqRatio = maxFrequency / MIN_FREQUENCY;
+  // position (in FFT bins, fractional) of a point along the log axis
+  const binAt = (pos) => (MIN_FREQUENCY * Math.pow(freqRatio, pos / (outputBins - 1))) / binHz;
 
   const rawMatrix = [];
 
@@ -199,16 +207,27 @@ function precomputeSpectrogram(audioBuffer) {
       fullMagnitudes[k] = Math.min(255, Math.log10(magnitude + 1) * 40);
     }
 
-    // Downsample: average groups of frequency bins into outputBins
+    // Resample onto the log axis: average the FFT bins an output bin covers,
+    // or interpolate between neighbours when it covers less than one
     const magnitudes = new Array(outputBins);
     for (let b = 0; b < outputBins; b++) {
-      let sum = 0;
-      const startBin = b * binsPerGroup;
-      const endBin = Math.min(startBin + binsPerGroup, binCount);
-      for (let k = startBin; k < endBin; k++) {
-        sum += fullMagnitudes[k];
+      const lo = binAt(b - 0.5);
+      const hi = binAt(b + 0.5);
+      if (hi - lo < 1) {
+        const centre = Math.min(binAt(b), binCount - 1);
+        const k0 = Math.floor(centre);
+        const k1 = Math.min(k0 + 1, binCount - 1);
+        const frac = centre - k0;
+        magnitudes[b] = fullMagnitudes[k0] * (1 - frac) + fullMagnitudes[k1] * frac;
+      } else {
+        const startBin = Math.max(0, Math.floor(lo));
+        const endBin = Math.min(binCount, Math.ceil(hi));
+        let sum = 0;
+        for (let k = startBin; k < endBin; k++) {
+          sum += fullMagnitudes[k];
+        }
+        magnitudes[b] = sum / (endBin - startBin);
       }
-      magnitudes[b] = sum / (endBin - startBin);
     }
 
     rawMatrix.push(magnitudes);
@@ -273,13 +292,18 @@ function niceTicks(max, steps) {
 // and every label is a billboard so it always faces the camera.
 function AxisCage({ size, duration, maxFrequency }) {
   const half = size / 2;
-  const h = size;
+  // the tallest peak reaches 0.7 × size, so the cage stops just above it
+  const h = size * 0.75;
 
   const axisColor = "#d9d3bd";
   const tickColor = "#aaaaaa";
   const lineColor = "#555555";
 
-  const freqTicks = niceTicks(maxFrequency / 1000, [1, 2, 5, 10]);
+  // log axis: 1-2-5 ticks between the lowest shown frequency and the top
+  const freqTicks = maxFrequency > 0
+    ? [0.1, 0.2, 0.5, 1, 2, 5, 10, 20].filter((khz) => khz * 1000 >= MIN_FREQUENCY && khz * 1000 <= maxFrequency)
+    : [];
+  const logSpan = Math.log(maxFrequency / MIN_FREQUENCY);
   const timeTicks = niceTicks(duration, [0.1, 0.2, 0.25, 0.5, 1, 2]);
   const timeDecimals = timeTicks.some((t) => Math.round(t * 100) % 10 !== 0) ? 2 : 1;
   const heightLines = [0.25, 0.5, 0.75, 1];
@@ -290,6 +314,8 @@ function AxisCage({ size, duration, maxFrequency }) {
       <Line points={[[-half, 0, half], [-half, h, half]]} color={axisColor} lineWidth={2} />
       <Line points={[[half, 0, half], [half, 0, -half]]} color={axisColor} lineWidth={2} />
 
+      {/* Labels typeset asynchronously, so they suspend on their own instead of blanking the scene */}
+      <Suspense fallback={null}>
       <Billboard position={[0, -2.2, half + 3]}>
         <Text fontSize={1.1} color={axisColor} anchorX="center" anchorY="middle">Frequency (kHz)</Text>
       </Billboard>
@@ -299,9 +325,11 @@ function AxisCage({ size, duration, maxFrequency }) {
       <Billboard position={[half + 3, -2.2, 0]}>
         <Text fontSize={1.1} color={axisColor} anchorX="center" anchorY="middle">Time (s)</Text>
       </Billboard>
+      </Suspense>
 
+      <Suspense fallback={null}>
       {freqTicks.map((khz) => {
-        const x = -half + (khz / (maxFrequency / 1000)) * size;
+        const x = -half + (Math.log((khz * 1000) / MIN_FREQUENCY) / logSpan) * size;
         return (
           <group key={`f-${khz}`}>
             <Line points={[[x, 0, half], [x, 0, half + 0.4]]} color={lineColor} lineWidth={1} />
@@ -332,6 +360,7 @@ function AxisCage({ size, duration, maxFrequency }) {
           </group>
         );
       })}
+      </Suspense>
 
       <Line points={[[-half, 0, half], [-half, 0, -half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.3} />
       <Line points={[[half, 0, -half], [-half, 0, -half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.3} />
@@ -470,7 +499,7 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize, isPlayingRef, st
   );
 }
 
-const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) {
+const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume = 1 }, ref) {
   const audioCtxRef = useRef(null);
   const audioBufferRef = useRef(null);
   const [historyMatrix, setHistoryMatrix] = useState([]);
@@ -479,6 +508,7 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
   const playbackStartTimeRef = useRef(0);
   const playbackDurationRef = useRef(0);
   const sourceRef = useRef(null);
+  const gainRef = useRef(null);
   // 0 = terrain hidden, 1 = fully revealed (while playing, the scanner position is used instead)
   const revealRef = useRef(0);
   const [hasPlayed, setHasPlayed] = useState(false);
@@ -497,6 +527,13 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
       }
     };
   }, []);
+
+  // keep the cry's loudness in step with the volume slider
+  useEffect(() => {
+    if (gainRef.current) {
+      gainRef.current.gain.value = volume;
+    }
+  }, [volume]);
 
   // fetch and calculat the graph the moment a new audioURL arrives
   useEffect(() => {
@@ -555,7 +592,12 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
     const sourceNode = audioCtxRef.current.createBufferSource();
     sourceRef.current = sourceNode;
     sourceNode.buffer = audioBufferRef.current;
-    sourceNode.connect(audioCtxRef.current.destination);
+    if (!gainRef.current) {
+      gainRef.current = audioCtxRef.current.createGain();
+      gainRef.current.connect(audioCtxRef.current.destination);
+    }
+    gainRef.current.gain.value = volume;
+    sourceNode.connect(gainRef.current);
     
     // scanner logic
     playbackDurationRef.current = audioBufferRef.current.duration;
@@ -590,7 +632,7 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
         )}
         <Canvas
           camera={{
-            position: [cubeSize * 1.8, cubeSize * 1.0, cubeSize * 1.8],
+            position: [cubeSize * 1.55, cubeSize * 0.9, cubeSize * 1.55],
             fov: 40,
           }}
           onCreated={({ gl }) => {
@@ -601,7 +643,13 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
           <directionalLight position={[10, 20, 10]} intensity={1.6} />
           <pointLight position={[-10, 10, -10]} intensity={0.5} />
 
-          <OrbitControls target={[0, cubeSize * 0.35, 0]} />
+          <OrbitControls
+            target={[0, cubeSize * 0.28, 0]}
+            enablePan={false}
+            minDistance={cubeSize * 1.2}
+            maxDistance={cubeSize * 3}
+            maxPolarAngle={Math.PI / 2}
+          />
 
           <AxisCage size={cubeSize} duration={audioInfo.duration} maxFrequency={audioInfo.maxFrequency} />
 
