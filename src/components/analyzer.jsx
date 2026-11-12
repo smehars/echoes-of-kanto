@@ -2,7 +2,7 @@
 // gets audioURL from app and handles everything related to sound and graphics
 import React, { useEffect, useRef, useState, useMemo, useImperativeHandle, forwardRef } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Text, Line } from "@react-three/drei";
+import { OrbitControls, Text, Line, Billboard } from "@react-three/drei";
 import "./analyzer.css";
 import * as THREE from "three";
 
@@ -103,10 +103,9 @@ function ScannerWave({ cubeSize, isPlayingRef, startTimeRef, durationRef, audioC
     }
 
     const progress = elapsed / duration; 
-    // Invert the time index to match the terrain's inverted row ordering
-    const timeIndex = Math.min(Math.floor((1 - progress) * rows), rows - 1);
+    const timeIndex = Math.min(Math.floor(progress * rows), rows - 1);
 
-    // FIX: Wave starts at the front (+half) and moves to the back (-half) along Z
+    // Wave starts at the front (+half) and moves to the back (-half) along Z
     const currentZ = half - (progress * cubeSize);
 
     const linePositions = lineObj.geometry.attributes.position.array;
@@ -119,7 +118,7 @@ function ScannerWave({ cubeSize, isPlayingRef, startTimeRef, durationRef, audioC
       const normalized = amplitude / maxAmplitude;
       const height = normalized * (cubeSize * 0.7);
 
-      // FIX: Frequencies spread left (-half) to right (+half) along X
+      // Frequencies spread left (-half) to right (+half) along X
       const worldX = -half + freqRatio * cubeSize;
 
       linePositions[f * 3]     = worldX;
@@ -260,73 +259,81 @@ function precomputeSpectrogram(audioBuffer) {
   return finalMatrix;
 }
 
-// 3D axis cage with labeled tick marks that surrounds the terrain
-function AxisCage({ size, tickCount = 5 }) {
+// Evenly spaced "nice" tick values from 0 up to max (at most ~6 of them)
+function niceTicks(max, steps) {
+  if (!max || max <= 0) return [];
+  const step = steps.find((st) => max / st <= 6) ?? steps[steps.length - 1];
+  const ticks = [];
+  for (let v = 0; v <= max + 1e-9; v += step) ticks.push(v);
+  return ticks;
+}
+
+// 3D axis cage that surrounds the terrain.
+// Frequency runs along the front-left edge, time along the front-right edge,
+// and every label is a billboard so it always faces the camera.
+function AxisCage({ size, duration, maxFrequency }) {
   const half = size / 2;
   const h = size;
 
-  const xColor = "#ff4444";
-  const yColor = "#44ff44";
-  const zColor = "#4488ff";
+  const axisColor = "#d9d3bd";
+  const tickColor = "#aaaaaa";
   const lineColor = "#555555";
 
-  const ticks = [];
-  for (let i = 0; i <= tickCount; i++) {
-    ticks.push(i / tickCount);
-  }
+  const freqTicks = niceTicks(maxFrequency / 1000, [1, 2, 5, 10]);
+  const timeTicks = niceTicks(duration, [0.1, 0.2, 0.25, 0.5, 1, 2]);
+  const timeDecimals = timeTicks.some((t) => Math.round(t * 100) % 10 !== 0) ? 2 : 1;
+  const heightLines = [0.25, 0.5, 0.75, 1];
 
   return (
     <group>
-      <Line points={[[-half, 0, half], [half, 0, half]]} color={xColor} lineWidth={2} />
-      <Line points={[[-half, 0, half], [-half, h, half]]} color={yColor} lineWidth={2} />
-      <Line points={[[-half, 0, half], [-half, 0, -half]]} color={zColor} lineWidth={2} />
+      <Line points={[[-half, 0, half], [half, 0, half]]} color={axisColor} lineWidth={2} />
+      <Line points={[[-half, 0, half], [-half, h, half]]} color={axisColor} lineWidth={2} />
+      <Line points={[[half, 0, half], [half, 0, -half]]} color={axisColor} lineWidth={2} />
 
-      {/* FIX: X axis is now Frequency */}
-      <Text position={[0, -1.2, half + 1]} fontSize={0.8} color={xColor} anchorX="center" anchorY="middle">
-        Frequency
-      </Text>
-      <Text position={[-half - 1.5, h / 2, half]} fontSize={0.8} color={yColor} anchorX="center" anchorY="middle" rotation={[0, 0, Math.PI / 2]}>
-        Amplitude
-      </Text>
-      {/* FIX: Z axis is now Time */}
-      <Text position={[-half - 1, -1.2, 0]} fontSize={0.8} color={zColor} anchorX="center" anchorY="middle" rotation={[0, Math.PI / 2, 0]}>
-        Time
-      </Text>
+      <Billboard position={[0, -2.2, half + 3]}>
+        <Text fontSize={1.1} color={axisColor} anchorX="center" anchorY="middle">Frequency (kHz)</Text>
+      </Billboard>
+      <Billboard position={[-half - 1.6, h / 2, half]}>
+        <Text fontSize={1.1} color={axisColor} anchorX="center" anchorY="middle" rotation={[0, 0, Math.PI / 2]}>Amplitude</Text>
+      </Billboard>
+      <Billboard position={[half + 3, -2.2, 0]}>
+        <Text fontSize={1.1} color={axisColor} anchorX="center" anchorY="middle">Time (s)</Text>
+      </Billboard>
 
-      {ticks.map((t, i) => {
-        const x = -half + t * size;
+      {freqTicks.map((khz) => {
+        const x = -half + (khz / (maxFrequency / 1000)) * size;
         return (
-          <group key={`x-${i}`}>
+          <group key={`f-${khz}`}>
             <Line points={[[x, 0, half], [x, 0, half + 0.4]]} color={lineColor} lineWidth={1} />
             <Line points={[[x, 0, half], [x, 0, -half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.2} />
-            <Text position={[x, 0, half + 0.8]} fontSize={0.4} color="#aaaaaa" anchorX="center" anchorY="middle">{t.toFixed(1)}</Text>
+            <Billboard position={[x, -0.2, half + 1]}>
+              <Text fontSize={0.65} color={tickColor} anchorX="center" anchorY="middle">{khz}</Text>
+            </Billboard>
           </group>
         );
       })}
 
-      {ticks.map((t, i) => {
+      {heightLines.map((t) => {
         const y = t * h;
         return (
-          <group key={`y-${i}`}>
-            <Line points={[[-half, y, half], [-half - 0.4, y, half]]} color={lineColor} lineWidth={1} />
-            <Line points={[[-half, y, half], [half, y, half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.2} />
-            <Text position={[-half - 0.8, y, half]} fontSize={0.4} color="#aaaaaa" anchorX="right" anchorY="middle">{t.toFixed(1)}</Text>
-          </group>
+          <Line key={`a-${t}`} points={[[-half, y, half], [half, y, half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.2} />
         );
       })}
 
-      {ticks.map((t, i) => {
-        const z = half - t * size;
+      {timeTicks.map((sec) => {
+        const z = half - (sec / duration) * size;
         return (
-          <group key={`z-${i}`}>
-            <Line points={[[-half, 0, z], [-half - 0.4, 0, z]]} color={lineColor} lineWidth={1} />
-            <Line points={[[-half, 0, z], [half, 0, z]]} color={lineColor} lineWidth={0.5} transparent opacity={0.2} />
-            <Text position={[-half - 0.8, 0, z]} fontSize={0.4} color="#aaaaaa" anchorX="right" anchorY="middle">{t.toFixed(1)}</Text>
+          <group key={`t-${sec}`}>
+            <Line points={[[half, 0, z], [half + 0.4, 0, z]]} color={lineColor} lineWidth={1} />
+            <Line points={[[half, 0, z], [-half, 0, z]]} color={lineColor} lineWidth={0.5} transparent opacity={0.2} />
+            <Billboard position={[half + 1, -0.2, z]}>
+              <Text fontSize={0.65} color={tickColor} anchorX="center" anchorY="middle">{sec.toFixed(timeDecimals)}</Text>
+            </Billboard>
           </group>
         );
       })}
 
-      <Line points={[[half, 0, half], [half, 0, -half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.3} />
+      <Line points={[[-half, 0, half], [-half, 0, -half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.3} />
       <Line points={[[half, 0, -half], [-half, 0, -half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.3} />
       <Line points={[[-half, h, half], [half, h, half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.3} />
       <Line points={[[-half, h, half], [-half, h, -half]]} color={lineColor} lineWidth={0.5} transparent opacity={0.3} />
@@ -339,8 +346,23 @@ function AxisCage({ size, tickCount = 5 }) {
   );
 }
 
-function SoundTerrain({ historyMatrix, terrainColors, cubeSize }) {
+function SoundTerrain({ historyMatrix, terrainColors, cubeSize, isPlayingRef, startTimeRef, durationRef, audioCtxRef, revealRef }) {
   const meshRef = useRef(null);
+
+  // Clips away everything the scanner has not passed yet (keeps z >= scanner z)
+  const clipPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), []);
+
+  useFrame(() => {
+    if (!meshRef.current) return;
+    let reveal = revealRef.current;
+    if (isPlayingRef.current && audioCtxRef.current && durationRef.current > 0) {
+      const elapsed = audioCtxRef.current.currentTime - startTimeRef.current;
+      reveal = Math.min(Math.max(elapsed / durationRef.current, 0), 1);
+    }
+    meshRef.current.visible = reveal > 0;
+    const scannerZ = cubeSize / 2 - reveal * cubeSize;
+    clipPlane.constant = -scannerZ + 0.01;
+  });
 
   // Dimensions derived from the matrix
   const rows = historyMatrix.length;
@@ -359,8 +381,6 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize }) {
       if (!geometry) return;
 
       const vertices = geometry.attributes.position.array;
-      const gridCols = cols;
-
       let maxAmplitude = 0;
       for (let time = 0; time < rows; time++) {
         for (let freq = 0; freq < cols; freq++) {
@@ -373,20 +393,20 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize }) {
 
       const colors = new Float32Array(vertices.length);
 
-      const colorBottom = new THREE.Color("#64748b");
       const tempColor = new THREE.Color();
+      const baseColor = new THREE.Color();
+      const white = new THREE.Color("#ffffff");
 
       const isDualType = terrainColors.length >= 2;
       const colorA = new THREE.Color(terrainColors[0]);
       const colorB = isDualType ? new THREE.Color(terrainColors[1]) : null;
-      const peakColor = new THREE.Color();
 
       for (let time = 0; time < rows; time++) {
         for (let freq = 0; freq < cols; freq++) {
           
-          // ---> THE FIX: Correctly map Time to X and Frequency to Z <---
-          // We also invert the freq so low pitches sit at the front of the cage
-          const vi = time*cols+freq;
+          // Plane rows run back to front, so the last row is the start of the cry.
+          // That puts time 0 at the front, where the scanner starts.
+          const vi = (rows - 1 - time) * cols + freq;
           
           const zIndex = vi * 3 + 2;
 
@@ -397,15 +417,16 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize }) {
             const height = normalized * (cubeSize * 0.7);
             vertices[zIndex] = height;
 
-            // For dual type: gradient across frequency axis (low freq = type1, high freq = type2)
+            // Type colour: for dual types, blend across the frequency axis (low freq = type1, high freq = type2)
+            baseColor.copy(colorA);
             if (isDualType) {
-              const freqRatio = freq / (cols - 1); 
-              tempColor.copy(colorA).lerp(colorB, freqRatio);
-              const darken = 0.3 + 0.7 * normalized; 
-              tempColor.multiplyScalar(darken);
-            } else {
-              tempColor.copy(colorA);
+              baseColor.lerp(colorB, freq / (cols - 1));
             }
+
+            // Ramp from a darker shade on the floor to a lighter tint at the peaks
+            const ramp = Math.pow(normalized, 0.8);
+            tempColor.copy(baseColor).multiplyScalar(0.5 + 0.5 * ramp);
+            tempColor.lerp(white, 0.15 * ramp);
 
             colors[vi * 3] = tempColor.r;
             colors[vi * 3 + 1] = tempColor.g;
@@ -440,9 +461,8 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize }) {
       <meshStandardMaterial
         vertexColors={true}
         color="#ffffff"
-        transparent={true}
-        opacity={0.85}
         side={THREE.DoubleSide}
+        clippingPlanes={[clipPlane]}
         metalness={0.1} // Lowered to prevent black mirror effect
         roughness={0.6} // Increased to diffuse the light better
       />
@@ -458,6 +478,12 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
   const isPlayingRef = useRef(false);
   const playbackStartTimeRef = useRef(0);
   const playbackDurationRef = useRef(0);
+  const sourceRef = useRef(null);
+  // 0 = terrain hidden, 1 = fully revealed (while playing, the scanner position is used instead)
+  const revealRef = useRef(0);
+  const [hasPlayed, setHasPlayed] = useState(false);
+  // real-world extent of the graph, for the axis labels
+  const [audioInfo, setAudioInfo] = useState({ duration: 0, maxFrequency: 0 });
 
 
   // Single size constant for all 3 axes
@@ -484,6 +510,15 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
 
     // clear the old graph while the new one calculates
     setHistoryMatrix([]);
+    setHasPlayed(false);
+    revealRef.current = 0;
+    isPlayingRef.current = false;
+    audioBufferRef.current = null;
+    if (sourceRef.current) {
+      sourceRef.current.onended = null;
+      sourceRef.current.stop();
+      sourceRef.current = null;
+    }
 
     fetch(audioUrl)
       .then((response) => response.arrayBuffer())
@@ -495,6 +530,7 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
         // 2. Precompute the graph immediately!
         const matrix = precomputeSpectrogram(audioBuffer);
         setHistoryMatrix(matrix);
+        setAudioInfo({ duration: audioBuffer.duration, maxFrequency: audioBuffer.sampleRate / 2 });
       })
       .catch((error) => console.error("Error analyzing the audio:", error));
   }, [audioUrl]); 
@@ -510,7 +546,14 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
       audioCtxRef.current.resume();
     }
     
+    // restart cleanly if the cry is already playing
+    if (sourceRef.current) {
+      sourceRef.current.onended = null;
+      sourceRef.current.stop();
+    }
+
     const sourceNode = audioCtxRef.current.createBufferSource();
+    sourceRef.current = sourceNode;
     sourceNode.buffer = audioBufferRef.current;
     sourceNode.connect(audioCtxRef.current.destination);
     
@@ -522,7 +565,10 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
 
     sourceNode.onended = () => {
       isPlayingRef.current = false;
+      revealRef.current = 1;
+      sourceRef.current = null;
     };
+    setHasPlayed(true);
     
     sourceNode.start(0);
   }
@@ -536,24 +582,38 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
   return (
     <div className="analyzer-wrapper">
       <div className="canvas-wrapper">
+        {historyMatrix.length === 0 && (
+          <p className="canvas-status">Tuning in to a wild cry…</p>
+        )}
+        {historyMatrix.length > 0 && !hasPlayed && (
+          <p className="canvas-status">Press Play Audio to scan the cry</p>
+        )}
         <Canvas
           camera={{
             position: [cubeSize * 1.8, cubeSize * 1.0, cubeSize * 1.8],
             fov: 40,
           }}
+          onCreated={({ gl }) => {
+            gl.localClippingEnabled = true;
+          }}
         >
-          <ambientLight intensity={0.4} />
-          <directionalLight position={[10, 20, 10]} intensity={0.8} />
+          <ambientLight intensity={0.9} />
+          <directionalLight position={[10, 20, 10]} intensity={1.6} />
           <pointLight position={[-10, 10, -10]} intensity={0.5} />
 
           <OrbitControls target={[0, cubeSize * 0.35, 0]} />
 
-          <AxisCage size={cubeSize} tickCount={5} />
+          <AxisCage size={cubeSize} duration={audioInfo.duration} maxFrequency={audioInfo.maxFrequency} />
 
           <SoundTerrain
             historyMatrix={historyMatrix}
             terrainColors={terrainColors}
             cubeSize={cubeSize}
+            isPlayingRef={isPlayingRef}
+            startTimeRef={playbackStartTimeRef}
+            durationRef={playbackDurationRef}
+            audioCtxRef={audioCtxRef}
+            revealRef={revealRef}
           />
 
           <ScannerWave 
@@ -565,6 +625,10 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors }, ref) 
             historyMatrix={historyMatrix}
           />
         </Canvas>
+      </div>
+      <div className="bezel-label" aria-hidden="true">
+        <span className="led led-red" />
+        <span>Cry scan</span>
       </div>
     </div>
   );

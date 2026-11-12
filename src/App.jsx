@@ -19,6 +19,7 @@ function App() {
   const [gameOver, setGameOver] = useState(false);
   const [won, setWon] = useState(false);
   const [spriteUrl, setSpriteUrl] = useState(null);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
 
   const[allPokemon, setAllPokemon] = useState([]);
 
@@ -55,8 +56,10 @@ function App() {
     : [];
 
   function handleGuess(overrideGuess) {
-    const finalGuess = typeof overrideGuess === "string" ? overrideGuess : guess;
-    if (finalGuess.toLowerCase().trim() === pokemonName.toLowerCase()) {
+    const finalGuess = (typeof overrideGuess === "string" ? overrideGuess : guess).toLowerCase().trim();
+    if (!finalGuess) return;
+    setActiveSuggestion(-1);
+    if (finalGuess === pokemonName.toLowerCase()) {
       // correct guess
       const rightSound = new Audio("/yayyyyyyyy.mp3");
       rightSound.play().catch((error) => {
@@ -71,11 +74,9 @@ function App() {
         console.error("Error playing sound:", error);
       });
       if (round >= MAX_ROUNDS) {
-        // wrong guess 
         setGameOver(true);
         setRevealed(true);
       } else {
-        // wrong guess
         setRound((prev) => prev + 1);
       }
     }
@@ -93,6 +94,22 @@ function App() {
     setGuess("");
     setGameOver(false);
     setWon(false);
+    setActiveSuggestion(-1);
+  }
+
+  function handleInputKeyDown(e) {
+    if (e.key === "ArrowDown" && suggestions.length > 0) {
+      e.preventDefault();
+      setActiveSuggestion((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp" && suggestions.length > 0) {
+      e.preventDefault();
+      setActiveSuggestion((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    } else if (e.key === "Escape") {
+      setShowDropdown(false);
+      setActiveSuggestion(-1);
+    } else if (e.key === "Enter" && guess.trim()) {
+      handleGuess(activeSuggestion >= 0 ? suggestions[activeSuggestion] : guess);
+    }
   }
 
   // Build terrain colors — always show type colors (that's the round 1 base hint)
@@ -120,17 +137,22 @@ function App() {
 
 return (
     <div id="main-div">
-      <h1>Pokémon: Echoes of Kanto</h1>
+      <header className="device-header">
+        <div className="device-lights" aria-hidden="true">
+          <span className="lens" />
+          <span className="led led-red" />
+          <span className="led led-yellow" />
+          <span className="led led-green" />
+        </div>
+        <h1>Pokémon: Echoes of Kanto</h1>
+      </header>
 
-      {/* The New 2-Column Container */}
       <div className="game-layout">
-        
-        {/* LEFT SIDE: The 3D Graph */}
+
         <div className="canvas-section">
           <Analyzer ref={analyzerRef} audioUrl={audioUrl} terrainColors={terrainColors} />
         </div>
 
-        {/* RIGHT SIDE: The UI Panel */}
         <div className="ui-section">
 
           <button className="primary-button" style={{ width: "100%" }} onClick={() => analyzerRef.current?.playAudio()}>
@@ -139,7 +161,17 @@ return (
 
           <div className="hints-area">
             <p className="round-indicator">Round {round} / {MAX_ROUNDS}</p>
-            {nameHint && <p className="hint-text"> {nameHint} ({pokemonName.length} letters)</p>}
+            {!gameOver && (
+              <p className="dialog-text">
+                {round === 1 ? "A wild cry echoes… Who could it be?" : "Not quite! Here's a hint."}
+              </p>
+            )}
+            {nameHint && (
+              <>
+                <p className="hint-text">{nameHint}</p>
+                <p className="hint-count">{pokemonName.length} letters</p>
+              </>
+            )}
             {spriteUrl && (showSilhouette || showFullSprite) && (
               <div className="sprite-container">
                 <img
@@ -158,48 +190,49 @@ return (
 
           {!gameOver ? (
             <div className="guess-area">
-              <div style={{ position: "relative", width: "100%" }}>
+              <div className="guess-field">
                 <input
                   type="text"
                   value={guess}
                   onChange={(e) => {
                     setGuess(e.target.value);
                     setShowDropdown(true);
+                    setActiveSuggestion(-1);
                   }}
-                  onKeyDown={(e) => e.key === "Enter" && guess.trim() && handleGuess()}
+                  onKeyDown={handleInputKeyDown}
                   placeholder="Enter Pokémon name..."
                   className="guess-input"
                   autoComplete="off"
+                  aria-label="Your guess"
                 />
                 {suggestions.length > 0 && (
                   <ul className="autocomplete-dropdown">
-                    {suggestions.map((name) => (
+                    {suggestions.map((name, i) => (
                       <li
                         key={name}
-                        onClick={() => {
-                          setGuess(name);
-                          setShowDropdown(false);
-                        }}
+                        className={i === activeSuggestion ? "active" : undefined}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => handleGuess(name)}
                       >{name}</li>
                     ))}
                   </ul>
                 )}
-                <button 
-                  className="primary-button" 
-                  style={{ marginTop: "10px", width: "100%" }} 
-                  onClick={() => handleGuess(guess)}
-                  disabled={guess.trim() === ""}
-                >
-                  Guess
-                </button>
               </div>
+              <button
+                className="primary-button"
+                style={{ width: "100%" }}
+                onClick={() => handleGuess(guess)}
+                disabled={guess.trim() === ""}
+              >
+                Guess
+              </button>
             </div>
           ) : (
             <div className="result-area">
               {won ? (
-                <p className="result-text win">You got it right! It's {pokemonName}!</p>
+                <p className="result-text win">Gotcha! It was <span className="poke-name">{pokemonName}</span>!</p>
               ) : (
-                <p className="result-text lose"> Unfortunate 😢 It was {pokemonName}!</p>
+                <p className="result-text lose">It got away… It was <span className="poke-name">{pokemonName}</span>!</p>
               )}
               <button className="primary-button" onClick={getNewPokemon}>
                 New Pokemon
@@ -210,7 +243,23 @@ return (
         </div>
       </div>
 
-      {/* footer w credits*/}
+      <div className="bottom-bar">
+      <div className="help">
+        <button type="button" className="help-button" aria-label="How to play" aria-describedby="help-panel">?</button>
+        <div className="help-panel" id="help-panel" role="tooltip">
+          <h2>How to play</h2>
+          <p>Press Play Audio to hear a Kanto Pokémon's cry, then guess who it is. You get {MAX_ROUNDS} guesses.</p>
+          <p>The terrain is the cry's shape, coloured by the Pokémon's type. Drag it to rotate.</p>
+          <p>Each wrong guess unlocks a hint:</p>
+          <ol>
+            <li>Number of letters</li>
+            <li>First letter</li>
+            <li>Silhouette</li>
+            <li>Full sprite</li>
+          </ol>
+        </div>
+      </div>
+
       <footer className="credits-footer">
         <span className="credits-text">Made by Mehar :)</span>
         <a href="https://github.com/smehars" target="_blank" rel="noopener noreferrer" className="credits-link" aria-label="GitHub">
@@ -220,6 +269,7 @@ return (
           <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
         </a>
       </footer>
+      </div>
     </div>
   );
 }

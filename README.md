@@ -7,6 +7,6 @@ You can check out the live project here: **[echoes-of-kanto.vercel.app](https://
 ## Tech Stack
 
 * **Frontend Tooling:** [Vite](https://vitejs.dev/)
-* **Framework/Library:** [React / Vue / Vanilla JS] 
+* **Framework/Library:** React, Three.js (react-three-fiber)
 * **Deployment:** [Vercel](https://vercel.com/)
 * **Other:** ESLint, Node.js
