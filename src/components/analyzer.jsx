@@ -377,9 +377,67 @@ function AxisCage({ size, duration, maxFrequency }) {
 
 function SoundTerrain({ historyMatrix, terrainColors, cubeSize, isPlayingRef, startTimeRef, durationRef, audioCtxRef, revealRef }) {
   const meshRef = useRef(null);
+  const wallsRef = useRef(null);
 
   // Clips away everything the scanner has not passed yet (keeps z >= scanner z)
   const clipPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), []);
+
+  // Walls from the four edges of the surface down to the floor, so the terrain
+  // reads as a solid block and there is no underside to look into
+  const wallGeometry = useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    const rowCount = historyMatrix.length;
+    const colCount = rowCount > 0 ? historyMatrix[0].length : 0;
+    if (rowCount < 2 || colCount < 2) return geo;
+
+    let max = 0;
+    for (const row of historyMatrix) for (const v of row) if (v > max) max = v;
+    if (max === 0) max = 1;
+
+    const half = cubeSize / 2;
+    const xAt = (f) => -half + (f / (colCount - 1)) * cubeSize;
+    const zAt = (t) => half - (t / (rowCount - 1)) * cubeSize;
+    const yAt = (t, f) => (historyMatrix[t][f] / max) * (cubeSize * 0.7);
+
+    const colorA = new THREE.Color(terrainColors[0]);
+    const colorB = terrainColors.length >= 2 ? new THREE.Color(terrainColors[1]) : null;
+    const shade = new THREE.Color();
+
+    const positions = [];
+    const colors = [];
+    const indices = [];
+
+    // one wall: a strip of (top, bottom) vertex pairs along an edge
+    const addWall = (count, pointAt) => {
+      const start = positions.length / 3;
+      for (let i = 0; i < count; i++) {
+        const { t, f } = pointAt(i);
+        const x = xAt(f);
+        const z = zAt(t);
+        shade.copy(colorA);
+        if (colorB) shade.lerp(colorB, f / (colCount - 1));
+        positions.push(x, yAt(t, f), z, x, 0, z);
+        colors.push(shade.r * 0.4, shade.g * 0.4, shade.b * 0.4, shade.r * 0.25, shade.g * 0.25, shade.b * 0.25);
+        if (i < count - 1) {
+          const a = start + i * 2;
+          indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
+      }
+    };
+
+    addWall(colCount, (f) => ({ t: 0, f }));              // front (start of the cry)
+    addWall(colCount, (f) => ({ t: rowCount - 1, f }));   // back (end of the cry)
+    addWall(rowCount, (t) => ({ t, f: 0 }));              // low-frequency side
+    addWall(rowCount, (t) => ({ t, f: colCount - 1 }));   // high-frequency side
+
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+  }, [historyMatrix, terrainColors, cubeSize]);
+
+  useEffect(() => () => wallGeometry.dispose(), [wallGeometry]);
 
   useFrame(() => {
     if (!meshRef.current) return;
@@ -389,6 +447,7 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize, isPlayingRef, st
       reveal = Math.min(Math.max(elapsed / durationRef.current, 0), 1);
     }
     meshRef.current.visible = reveal > 0;
+    if (wallsRef.current) wallsRef.current.visible = reveal > 0;
     const scannerZ = cubeSize / 2 - reveal * cubeSize;
     clipPlane.constant = -scannerZ + 0.01;
   });
@@ -475,6 +534,16 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize, isPlayingRef, st
   }, [historyMatrix, rows, cols, cubeSize, terrainColors]);
 
   return (
+    <>
+    <mesh ref={wallsRef} geometry={wallGeometry} visible={false}>
+      <meshStandardMaterial
+        vertexColors={true}
+        side={THREE.DoubleSide}
+        clippingPlanes={[clipPlane]}
+        metalness={0.1}
+        roughness={0.8}
+      />
+    </mesh>
     <mesh
       key={geoKey}
       ref={meshRef}
@@ -496,6 +565,7 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize, isPlayingRef, st
         roughness={0.6} // Increased to diffuse the light better
       />
     </mesh>
+    </>
   );
 }
 
@@ -632,7 +702,7 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume 
         )}
         <Canvas
           camera={{
-            position: [cubeSize * 1.55, cubeSize * 0.9, cubeSize * 1.55],
+            position: [cubeSize * 1.42, cubeSize * 1.4, cubeSize * 1.42],
             fov: 40,
           }}
           onCreated={({ gl }) => {
