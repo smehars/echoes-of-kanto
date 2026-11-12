@@ -1,13 +1,16 @@
 // acts as rendererer
 // gets audioURL from app and handles everything related to sound and graphics
 import React, { Suspense, useEffect, useRef, useState, useMemo, useImperativeHandle, forwardRef } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Text, Line, Billboard } from "@react-three/drei";
 import "./analyzer.css";
 import * as THREE from "three";
 
 function ScannerWave({ cubeSize, isPlayingRef, startTimeRef, durationRef, audioCtxRef, historyMatrix }) {
   const groupRef = useRef(null);
+  const lineRef = useRef(null);
+  const glowRef = useRef(null);
+  const curtainRef = useRef(null);
   const half = cubeSize / 2;
   const cols = historyMatrix.length > 0 && historyMatrix[0] ? historyMatrix[0].length : 0;
   const rows = historyMatrix.length;
@@ -85,10 +88,15 @@ function ScannerWave({ cubeSize, isPlayingRef, startTimeRef, durationRef, audioC
   }, [pointCount]);
 
   useFrame(() => {
+    const line = lineRef.current;
+    const glow = glowRef.current;
+    const curtain = curtainRef.current;
+    if (!line || !glow || !curtain) return;
+
     if (!isPlayingRef.current || !audioCtxRef.current || rows === 0 || cols === 0) {
-      lineObj.visible = false;
-      glowObj.visible = false;
-      curtainMesh.visible = false;
+      line.visible = false;
+      glow.visible = false;
+      curtain.visible = false;
       return;
     }
 
@@ -96,9 +104,9 @@ function ScannerWave({ cubeSize, isPlayingRef, startTimeRef, durationRef, audioC
     const duration = durationRef.current;
 
     if (elapsed > duration) {
-      lineObj.visible = false;
-      glowObj.visible = false;
-      curtainMesh.visible = false;
+      line.visible = false;
+      glow.visible = false;
+      curtain.visible = false;
       return;
     }
 
@@ -108,8 +116,8 @@ function ScannerWave({ cubeSize, isPlayingRef, startTimeRef, durationRef, audioC
     // Wave starts at the front (+half) and moves to the back (-half) along Z
     const currentZ = half - (progress * cubeSize);
 
-    const linePositions = lineObj.geometry.attributes.position.array;
-    const curtainPositions = curtainMesh.geometry.attributes.position.array;
+    const linePositions = line.geometry.attributes.position.array;
+    const curtainPositions = curtain.geometry.attributes.position.array;
 
     for (let f = 0; f < pointCount; f++) {
       const freqRatio = f / (pointCount - 1);
@@ -135,30 +143,71 @@ function ScannerWave({ cubeSize, isPlayingRef, startTimeRef, durationRef, audioC
       curtainPositions[(ci + 1) * 3 + 2] = currentZ;
     }
 
-    lineObj.geometry.attributes.position.needsUpdate = true;
-    lineObj.geometry.computeBoundingBox();
-    lineObj.geometry.computeBoundingSphere();
+    line.geometry.attributes.position.needsUpdate = true;
+    line.geometry.computeBoundingBox();
+    line.geometry.computeBoundingSphere();
 
-    curtainMesh.geometry.attributes.position.needsUpdate = true;
-    curtainMesh.geometry.computeBoundingBox();
-    curtainMesh.geometry.computeBoundingSphere();
+    curtain.geometry.attributes.position.needsUpdate = true;
+    curtain.geometry.computeBoundingBox();
+    curtain.geometry.computeBoundingSphere();
 
-    lineObj.visible = true;
-    glowObj.visible = true;
-    curtainMesh.visible = true;
+    line.visible = true;
+    glow.visible = true;
+    curtain.visible = true;
   });
 
   return (
     <group ref={groupRef}>
-      <primitive object={lineObj} />
-      <primitive object={glowObj} />
-      <primitive object={curtainMesh} />
+      <primitive ref={lineRef} object={lineObj} />
+      <primitive ref={glowRef} object={glowObj} />
+      <primitive ref={curtainRef} object={curtainMesh} />
     </group>
   );
 }
 
+// Placeholder until a cry has been analysed
+const NO_ANALYSIS = { url: null, matrix: [], duration: 0, maxFrequency: 0 };
+
 // Lowest frequency shown on the (logarithmic) frequency axis
 const MIN_FREQUENCY = 100;
+
+// In-place radix-2 FFT (Cooley-Tukey). `re` and `im` hold the real and imaginary
+// parts and must have a power-of-two length. Gives the same result as measuring
+// every frequency separately, in n·log(n) steps instead of n².
+function fft(re, im) {
+  const n = re.length;
+
+  // reorder the samples by bit-reversed index
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const tr = re[i]; re[i] = re[j]; re[j] = tr;
+      const ti = im[i]; im[i] = im[j]; im[j] = ti;
+    }
+  }
+
+  // combine pairs, then fours, then eights... doubling each pass
+  for (let size = 2; size <= n; size <<= 1) {
+    const halfSize = size >> 1;
+    const step = (-2 * Math.PI) / size;
+    for (let start = 0; start < n; start += size) {
+      for (let k = 0; k < halfSize; k++) {
+        const wr = Math.cos(step * k);
+        const wi = Math.sin(step * k);
+        const a = start + k;
+        const b = a + halfSize;
+        const xr = re[b] * wr - im[b] * wi;
+        const xi = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - xr;
+        im[b] = im[a] - xi;
+        re[a] += xr;
+        im[a] += xi;
+      }
+    }
+  }
+}
 
 // Compute spectrogram directly from raw PCM data
 function precomputeSpectrogram(audioBuffer) {
@@ -193,17 +242,14 @@ function precomputeSpectrogram(audioBuffer) {
       padded[n] *= 0.5 * (1 - Math.cos((2 * Math.PI * n) / (fftSize - 1)));
     }
 
-    // Simple DFT to get magnitude spectrum (full resolution)
+    // FFT to get the magnitude spectrum (full resolution)
+    const re = Float64Array.from(padded);
+    const im = new Float64Array(fftSize);
+    fft(re, im);
+
     const fullMagnitudes = new Array(binCount);
     for (let k = 0; k < binCount; k++) {
-      let real = 0;
-      let imag = 0;
-      for (let n = 0; n < fftSize; n++) {
-        const angle = (2 * Math.PI * k * n) / fftSize;
-        real += padded[n] * Math.cos(angle);
-        imag -= padded[n] * Math.sin(angle);
-      }
-      const magnitude = Math.sqrt(real * real + imag * imag);
+      const magnitude = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
       fullMagnitudes[k] = Math.min(255, Math.log10(magnitude + 1) * 40);
     }
 
@@ -449,7 +495,7 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize, isPlayingRef, st
     meshRef.current.visible = reveal > 0;
     if (wallsRef.current) wallsRef.current.visible = reveal > 0;
     const scannerZ = cubeSize / 2 - reveal * cubeSize;
-    clipPlane.constant = -scannerZ + 0.01;
+    meshRef.current.material.clippingPlanes[0].constant = -scannerZ + 0.01;
   });
 
   // Dimensions derived from the matrix
@@ -572,7 +618,15 @@ function SoundTerrain({ historyMatrix, terrainColors, cubeSize, isPlayingRef, st
 const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume = 1 }, ref) {
   const audioCtxRef = useRef(null);
   const audioBufferRef = useRef(null);
-  const [historyMatrix, setHistoryMatrix] = useState([]);
+  // result of analysing a cry, tagged with the url it came from
+  const [analysis, setAnalysis] = useState(NO_ANALYSIS);
+  // the analysis that Play was last pressed for
+  const [playedAnalysis, setPlayedAnalysis] = useState(null);
+  // anything left over from the previous cry counts as "still loading"
+  const ready = audioUrl != null && analysis.url === audioUrl;
+  const historyMatrix = ready ? analysis.matrix : NO_ANALYSIS.matrix;
+  const audioInfo = ready ? analysis : NO_ANALYSIS;
+  const hasPlayed = ready && playedAnalysis === analysis;
   // playback ref for a wave
   const isPlayingRef = useRef(false);
   const playbackStartTimeRef = useRef(0);
@@ -581,9 +635,6 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume 
   const gainRef = useRef(null);
   // 0 = terrain hidden, 1 = fully revealed (while playing, the scanner position is used instead)
   const revealRef = useRef(0);
-  const [hasPlayed, setHasPlayed] = useState(false);
-  // real-world extent of the graph, for the axis labels
-  const [audioInfo, setAudioInfo] = useState({ duration: 0, maxFrequency: 0 });
 
 
   // Single size constant for all 3 axes
@@ -615,9 +666,9 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume 
       audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     }
 
-    // clear the old graph while the new one calculates
-    setHistoryMatrix([]);
-    setHasPlayed(false);
+    let cancelled = false;
+
+    // stop and hide whatever the previous cry left behind
     revealRef.current = 0;
     isPlayingRef.current = false;
     audioBufferRef.current = null;
@@ -631,15 +682,24 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume 
       .then((response) => response.arrayBuffer())
       .then((buffer) => audioCtxRef.current.decodeAudioData(buffer))
       .then((audioBuffer) => {
+        if (cancelled) return;
+
         // 1. Save the audio to play later
         audioBufferRef.current = audioBuffer; 
         
         // 2. Precompute the graph immediately!
-        const matrix = precomputeSpectrogram(audioBuffer);
-        setHistoryMatrix(matrix);
-        setAudioInfo({ duration: audioBuffer.duration, maxFrequency: audioBuffer.sampleRate / 2 });
+        setAnalysis({
+          url: audioUrl,
+          matrix: precomputeSpectrogram(audioBuffer),
+          duration: audioBuffer.duration,
+          maxFrequency: audioBuffer.sampleRate / 2,
+        });
       })
       .catch((error) => console.error("Error analyzing the audio:", error));
+
+    return () => {
+      cancelled = true;
+    };
   }, [audioUrl]); 
 
   // this function handles playing the sound
@@ -680,7 +740,7 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume 
       revealRef.current = 1;
       sourceRef.current = null;
     };
-    setHasPlayed(true);
+    setPlayedAnalysis(analysis);
     
     sourceNode.start(0);
   }
@@ -688,8 +748,6 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume 
   useImperativeHandle(ref, () => ({
     playAudio,
   }));
-
-  const half = cubeSize / 2;
 
   return (
     <div className="analyzer-wrapper">
