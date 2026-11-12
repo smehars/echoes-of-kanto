@@ -645,6 +645,10 @@ const Analyzer = forwardRef(function Analyzer({ audioUrl, terrainColors, volume 
       //cleans up on unmount
       if (audioCtxRef.current) {
         audioCtxRef.current.close();
+        // a closed context stays silent, so make sure a fresh one gets built
+        audioCtxRef.current = null;
+        gainRef.current = null;
+        sourceRef.current = null;
       }
     };
   }, []);
